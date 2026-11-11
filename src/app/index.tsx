@@ -24,6 +24,7 @@ import { AttachIcon, MenuIcon, MicIcon, SettingsIcon } from '@/components/header
 import Markdown from '@/components/markdown';
 import { OdysseusLogo } from '@/components/odysseus-logo';
 import { OdysseusWordmark } from '@/components/odysseus-wordmark';
+import { SafeChatScreen } from '@/components/safe-chat';
 import { theme } from '@/constants/theme';
 import {
   ApiError,
@@ -142,6 +143,11 @@ type Status =
   | { kind: 'ready' };
 
 export default function ChatScreen() {
+  const { pairing } = usePairing();
+  return pairing?.v === 2 ? <SafeChatScreen pairing={pairing} /> : <LanChatScreen />;
+}
+
+function LanChatScreen() {
   const { pairing, relocate } = usePairing();
   const { openSidebar } = useSidebar();
   const dictation = useDictation();

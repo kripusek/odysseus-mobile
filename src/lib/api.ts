@@ -177,7 +177,7 @@ function baseUrl(p: Pairing): string {
 }
 
 function authHeaders(p: Pairing): Record<string, string> {
-  return { Authorization: `Bearer ${p.token}` };
+  return { Authorization: `Bearer ${p.token}`, ...(p.cf_access_client_id && p.cf_access_client_secret ? { 'CF-Access-Client-Id': p.cf_access_client_id, 'CF-Access-Client-Secret': p.cf_access_client_secret } : {}) };
 }
 
 /**
@@ -190,34 +190,37 @@ export function imageSource(
   p: Pairing,
   imageUrl: string,
 ): { uri: string; headers: Record<string, string> } {
+  // React Native Image cannot disable redirects for this request.
+  if (p.cf_access_client_secret) return { uri: '', headers: {} };
   return { uri: `${baseUrl(p)}${imageUrl}`, headers: authHeaders(p) };
 }
 
 async function attempt(
   p: Pairing,
   path: string,
-  init?: { method?: string; body?: BodyInit; headers?: Record<string, string> },
+  init?: { method?: string; body?: BodyInit; headers?: Record<string, string>; timeoutMs?: number },
 ): Promise<Response> {
   const controller = new AbortController();
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     controller.abort();
-  }, TIMEOUT_MS);
+  }, init?.timeoutMs ?? TIMEOUT_MS);
   const method = init?.method ?? 'GET';
   const url = `${baseUrl(p)}${path}`;
   const started = Date.now();
   dlog('http', `→ ${method} ${url}`);
   try {
-    const res = await fetch(url, {
+    const res = await (p.cf_access_client_secret ? expoFetch : fetch)(url, {
       method,
+      redirect: 'error',
       headers: { ...authHeaders(p), ...(init?.headers ?? {}) },
       body: init?.body,
       signal: controller.signal,
     });
     dlog('http', `← ${res.status} ${method} ${path} (${Date.now() - started}ms)`);
     if (res.status === 401) {
-      onUnauthorized?.();
+      if (!p.cf_access_client_secret) onUnauthorized?.();
       throw new ApiError('The pairing token was rejected. Re-pair from your server.', 'unauthorized', 401);
     }
     return res;
@@ -250,12 +253,12 @@ async function attempt(
 async function request(
   p: Pairing,
   path: string,
-  init?: { method?: string; body?: BodyInit; headers?: Record<string, string> },
+  init?: { method?: string; body?: BodyInit; headers?: Record<string, string>; timeoutMs?: number },
 ): Promise<Response> {
   try {
     return await attempt(p, path, init);
   } catch (e) {
-    if (e instanceof ApiError && e.kind === 'network' && onRelocate) {
+    if (e instanceof ApiError && e.kind === 'network' && onRelocate && p.v !== 2) {
       const moved = await onRelocate(p).catch(() => null);
       if (moved) {
         dlog('http', `relocated → retry ${init?.method ?? 'GET'} ${path} @ ${moved.host}:${moved.port}`);
@@ -271,6 +274,20 @@ async function json<T>(res: Response): Promise<T> {
   const data = (await res.json().catch(() => null)) as T | null;
   if (data === null) throw new ApiError('Unexpected response from server.', 'bad_response');
   return data;
+}
+
+/** Text-only remote chat; the server owns model selection and runs no tools. */
+export async function safeChat(p: Pairing, messages: { role: 'user' | 'assistant'; content: string }[]): Promise<string> {
+  if (p.v !== 2 || !p.tls || messages.length < 1 || messages.length > 16 || messages[messages.length - 1].role !== 'user' || messages.some((m) => !m.content.trim() || m.content.length > 8000 || (m.role !== 'user' && m.role !== 'assistant')) || messages.reduce((n, m) => n + m.content.length, 0) > 32000) {
+    throw new ApiError('Invalid chat message or conversation is too long.', 'bad_response');
+  }
+  const res = await request(p, '/api/companion/safe-chat', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messages }), timeoutMs: 120000,
+  });
+  const data = await json<{ response?: unknown }>(res);
+  if (typeof data.response !== 'string' || !data.response.trim()) throw new ApiError('Unexpected response from server.', 'bad_response');
+  return data.response;
 }
 
 /** Verify host/port/token during pairing. Returns server identity on success. */
@@ -329,6 +346,7 @@ export interface UploadedAttachment {
  * It runs outside `request()`, so the 401 / error handling is mirrored here.
  */
 export async function upload(p: Pairing, file: PickedFile): Promise<UploadedAttachment> {
+  if (p.cf_access_client_secret) throw new ApiError('File uploads are unavailable for Cloudflare Access connections.', 'server');
   const result = await new File(file.uri)
     .upload(`${baseUrl(p)}/api/companion/upload`, {
       uploadType: UploadType.MULTIPART,
@@ -929,6 +947,7 @@ export function streamChat(
     try {
       const res = await expoFetch(`${baseUrl(pp)}/api/chat_stream`, {
         method: 'POST',
+        redirect: 'error',
         headers: {
           ...authHeaders(pp),
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -963,7 +982,7 @@ export function streamChat(
     // Host may have moved — rescan the LAN once and reconnect to the new address
     // before surfacing a connection error, so a send right after a Wi-Fi switch
     // still goes through instead of failing.
-    if (outcome === 'unreachable' && onRelocate && !userCancelled) {
+    if (outcome === 'unreachable' && onRelocate && !userCancelled && p.v !== 2) {
       const moved = await onRelocate(p).catch(() => null);
       if (moved && !userCancelled) {
         stopTarget = moved;
@@ -980,7 +999,7 @@ export function streamChat(
     const res = outcome;
 
     if (res.status === 401) {
-      onUnauthorized?.();
+      if (!p.cf_access_client_secret) onUnauthorized?.();
       handlers.onError?.(new ApiError('Token rejected. Re-pair from your server.', 'unauthorized', 401));
       return;
     }
@@ -1251,6 +1270,7 @@ export function streamResearch(
     try {
       res = await expoFetch(`${baseUrl(p)}/api/companion/research/stream/${encodeURIComponent(sid)}`, {
         method: 'GET',
+        redirect: 'error',
         headers: { ...authHeaders(p), Accept: 'text/event-stream' },
         signal: controller.signal,
       });

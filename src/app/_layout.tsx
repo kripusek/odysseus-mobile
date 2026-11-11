@@ -18,7 +18,7 @@ function RootNavigator() {
   const { pairing, ready } = usePairing();
 
   // Route notification taps to the relevant screen, app-wide.
-  useEffect(() => setupNotificationTapHandler(), []);
+  useEffect(() => pairing?.v === 2 ? undefined : setupNotificationTapHandler(), [pairing?.v]);
 
   // While the keychain read is in flight, paint our own background instead of
   // the pairing screen — so an already-paired user never flashes the pairing
@@ -43,6 +43,8 @@ function RootNavigator() {
       >
         <Stack.Protected guard={paired}>
           <Stack.Screen name="index" />
+        </Stack.Protected>
+        <Stack.Protected guard={paired && pairing?.v !== 2}>
           <Stack.Screen name="sessions" />
           <Stack.Screen name="notes" />
           <Stack.Screen name="documents" />
@@ -72,10 +74,10 @@ function RootNavigator() {
       </Stack>
 
       {/* Left-edge open-drawer gesture for every paired screen (below Sidebar). */}
-      {paired && <EdgeSwipe />}
+      {paired && pairing?.v !== 2 && <EdgeSwipe />}
 
       {/* Overlay above every paired screen; renders nothing while closed. */}
-      {paired && <Sidebar />}
+      {paired && pairing?.v !== 2 && <Sidebar />}
     </>
   );
 }

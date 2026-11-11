@@ -14,6 +14,7 @@ import { fetch as expoFetch } from 'expo/fetch';
 import {
   ApiError,
   ping,
+  safeChat,
   listModels,
   createSession,
   listNotes,
@@ -415,5 +416,54 @@ describe('streamChat attachments', () => {
     });
     const [, init] = mockExpoFetch.mock.calls[0] as [string, { body: string }];
     expect(init.body).not.toContain('attachments=');
+  });
+});
+
+
+test('Cloudflare credentials are sent over HTTPS with redirects disabled', async () => {
+  const p: Pairing = { v: 2, host: 'ai.example.com', port: 443, tls: true, token: 'ody_abcdefgh', cf_access_client_id: 'id', cf_access_client_secret: 'secret' };
+  (mockExpoFetch as jest.Mock).mockResolvedValue(jsonResponse({ ok: true }));
+  await ping(p);
+  const [url, init] = (mockExpoFetch as jest.Mock).mock.calls[0];
+  expect(url).toBe('https://ai.example.com:443/api/companion/ping');
+  expect(init.redirect).toBe('error');
+  expect(init.headers['CF-Access-Client-Id']).toBe('id');
+  expect(init.headers['CF-Access-Client-Secret']).toBe('secret');
+  await expect(upload(p, { uri: 'file:///x', name: 'x', mimeType: 'image/png' })).rejects.toThrow('unavailable');
+});
+
+test('Cloudflare failure does not clear pairing or retry another host', async () => {
+  const p: Pairing = { v: 2, host: 'ai.example.com', port: 443, tls: true, token: 'ody_abcdefgh', cf_access_client_id: 'id', cf_access_client_secret: 'secret' };
+  const unauthorized = jest.fn();
+  setUnauthorizedHandler(unauthorized);
+  (mockExpoFetch as jest.Mock).mockResolvedValue(jsonResponse({}, { status: 401 }));
+  await expect(ping(p)).rejects.toMatchObject({ kind: 'unauthorized' });
+  expect(unauthorized).not.toHaveBeenCalled();
+  expect(mockExpoFetch).toHaveBeenCalledTimes(1);
+});
+
+
+describe('safe remote chat', () => {
+  const p: Pairing = { v: 2, host: 'ai.example.com', port: 443, tls: true, token: 'ody_abcdefgh', cf_access_client_id: 'id', cf_access_client_secret: 'secret' };
+  const messages = [{ role: 'user' as const, content: 'Hello' }];
+  test('posts only bounded text history to safe-chat without redirects', async () => {
+    (mockExpoFetch as jest.Mock).mockResolvedValue(jsonResponse({ response: 'Hi' }));
+    expect(await safeChat(p, messages)).toBe('Hi');
+    const [url, init] = (mockExpoFetch as jest.Mock).mock.calls[0];
+    expect(url).toBe('https://ai.example.com:443/api/companion/safe-chat');
+    expect(init.method).toBe('POST');
+    expect(init.redirect).toBe('error');
+    expect(JSON.parse(init.body)).toEqual({ messages });
+    expect(init.headers['CF-Access-Client-Secret']).toBe('secret');
+  });
+  test('rejects invalid messages and non-remote pairings before network', async () => {
+    await expect(safeChat(p, [{ role: 'user', content: 'x'.repeat(8001) }])).rejects.toMatchObject({ kind: 'bad_response' });
+    await expect(safeChat(P, messages)).rejects.toMatchObject({ kind: 'bad_response' });
+    expect(mockExpoFetch).not.toHaveBeenCalled();
+  });
+  test('surfaces server errors and rejects malformed responses', async () => {
+    (mockExpoFetch as jest.Mock).mockResolvedValueOnce(jsonResponse({}, { status: 503 })).mockResolvedValueOnce(jsonResponse({ response: null }));
+    await expect(safeChat(p, messages)).rejects.toMatchObject({ kind: 'server', status: 503 });
+    await expect(safeChat(p, messages)).rejects.toMatchObject({ kind: 'bad_response' });
   });
 });

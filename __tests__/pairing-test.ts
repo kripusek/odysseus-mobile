@@ -263,3 +263,18 @@ describe('secure-store round-trip', () => {
     expect(await loadPairing()).toBeNull();
   });
 });
+
+
+describe('Cloudflare v2 pairing', () => {
+  const code = { v: 2, base_url: 'https://ai.example.com', token: 'ody_abcdefgh', cf_access_client_id: 'id', cf_access_client_secret: 'secret' };
+  test('normalizes a secure origin and retains both credentials', () => {
+    expect(parsePairingPayload(JSON.stringify(code))).toEqual({ v: 2, host: 'ai.example.com', port: 443, tls: true, token: code.token, cf_access_client_id: 'id', cf_access_client_secret: 'secret' });
+  });
+  test.each(['http://ai.example.com', 'https://ai.example.com/path', 'https://user@ai.example.com', 'https://ai.example.com?x=1'])('rejects invalid origin %s', (base_url) => {
+    expect(parsePairingPayload(JSON.stringify({ ...code, base_url }))).toBeNull();
+  });
+  test('rejects a partial credential pair and header injection', () => {
+    expect(parsePairingPayload(JSON.stringify({ ...code, cf_access_client_secret: undefined }))).toBeNull();
+    expect(parsePairingPayload(JSON.stringify({ ...code, cf_access_client_secret: 'secret\r\nX: bad' }))).toBeNull();
+  });
+});

@@ -74,7 +74,7 @@ export function PairingProvider({ children }: { children: ReactNode }) {
   const runRelocate = useCallback(async (): Promise<Pairing | null> => {
     if (relocateInFlight.current) return relocateInFlight.current;
     const cur = pairingRef.current;
-    if (!cur) return null;
+    if (!cur || cur.v === 2) return null;
     const job = (async (): Promise<Pairing | null> => {
       const host = await discoverServerHost(cur);
       if (!host) {
@@ -161,12 +161,12 @@ export function PairingProvider({ children }: { children: ReactNode }) {
         setPairing(p);
         // Offer push as soon as we're paired. Fire-and-forget: a denied prompt
         // or push-less device must not delay landing on the chat screen.
-        void enablePushForPairing(p);
+        if (p.v !== 2) void enablePushForPairing(p);
       },
       unpair: async () => {
         // Best-effort: tell the server to forget this device before the token
         // goes away, so it doesn't keep a stale push target.
-        if (pairing) await disablePushForPairing(pairing);
+        if (pairing && pairing.v !== 2) await disablePushForPairing(pairing);
         await clearPairing();
         setPairing(null);
       },
@@ -178,7 +178,7 @@ export function PairingProvider({ children }: { children: ReactNode }) {
         return (await runRelocate()) !== null;
       },
       setAddress: async (host, port, tls) => {
-        if (!pairing) return false;
+        if (!pairing || pairing.v === 2) return false;
         const parsed = splitScheme(host);
         const h = parsed.host;
         const secure = parsed.tls ?? tls ?? pairing.tls ?? false;

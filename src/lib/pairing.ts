@@ -24,6 +24,8 @@ export interface Pairing {
    * LAN pairing, so the stored payload keeps its original shape.
    */
   tls?: boolean;
+  cf_access_client_id?: string;
+  cf_access_client_secret?: string;
 }
 
 export async function savePairing(p: Pairing): Promise<void> {
@@ -134,8 +136,13 @@ function isValidPairing(o: unknown): o is Pairing {
   if (!o || typeof o !== 'object') return false;
   const p = o as Record<string, unknown>;
   if (p.tls !== undefined && typeof p.tls !== 'boolean') return false;
+  const hasId = p.cf_access_client_id !== undefined;
+  const hasSecret = p.cf_access_client_secret !== undefined;
+  if (hasId !== hasSecret) return false;
+  if (hasId && (p.tls !== true || typeof p.cf_access_client_id !== 'string' || typeof p.cf_access_client_secret !== 'string' || !/^[\x21-\x7e]{1,512}$/.test(p.cf_access_client_id) || !/^[\x21-\x7e]{1,512}$/.test(p.cf_access_client_secret))) return false;
   return (
-    p.v === 1 &&
+    (p.v === 1 || p.v === 2) &&
+    (p.v !== 2 || p.tls === true) &&
     typeof p.host === 'string' &&
     isPairableHost(p.host, p.tls === true) &&
     typeof p.port === 'number' &&
@@ -157,6 +164,14 @@ function isValidPairing(o: unknown): o is Pairing {
 export function parsePairingPayload(raw: string): Pairing | null {
   try {
     const obj = JSON.parse(raw.trim());
+    if (obj?.v === 2) {
+      if (typeof obj.base_url !== 'string' || !/^https:\/\/[a-zA-Z0-9.-]+(?::[0-9]{1,5})?$/.test(obj.base_url)) return null;
+      const url = new URL(obj.base_url);
+      obj.host = url.hostname;
+      obj.port = url.port ? Number(url.port) : 443;
+      obj.tls = true;
+      delete obj.base_url;
+    }
     // A QR's port may arrive as a string; coerce it. We do NOT coerce `v` — the
     // version field is the gate that rejects malformed/future payload shapes, so
     // let isValidPairing enforce v===1 strictly.
